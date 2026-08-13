@@ -1,4 +1,4 @@
-import html
+﻿import html
 import hashlib
 import json
 import time
@@ -153,20 +153,33 @@ st.markdown(
         padding-left: 0;
     }
 
-    .edit-row {
+    .edit-beside-bubble {
         display: flex;
-        justify-content: flex-end;
-        margin: -14px 0 6px;
+        justify-content: flex-start;
+        align-items: center;
+        margin-top: 8px;
+        margin-bottom: 18px;
+        padding-right: 0;
+        transform: none;
     }
 
-    .edit-row .stButton > button {
-        width: auto;
-        min-height: 28px;
-        padding: 3px 10px;
-        border-radius: 999px;
+    .edit-beside-bubble .stButton > button {
+        width: 38px;
+        height: 38px;
+        min-height: 38px;
+        padding: 0;
+        border-radius: 12px;
         color: var(--muted);
-        background: transparent;
-        font-size: 13px;
+        background: #f4f4f4;
+        font-size: 17px;
+        justify-content: center;
+        border: 1px solid #e5e7eb;
+        box-shadow: none;
+    }
+
+    .edit-beside-bubble .stButton > button:hover {
+        background: #e9e9e9;
+        color: #171717;
     }
 
     .attachment-note {
@@ -593,6 +606,18 @@ def render_message(role: str, content: str) -> None:
     )
 
 
+def render_user_message_with_edit(content: str) -> None:
+    safe_content = html.escape(content).replace("\n", "<br>")
+    st.markdown(
+        f"""
+<div class="message-row user user-message-with-edit">
+  <div class="message-bubble">{safe_content}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def render_attachments(files: list[str]) -> None:
     if not files:
         return
@@ -698,15 +723,23 @@ else:
                 st.rerun()
             continue
 
-        render_message(message["role"], message["content"])
-        render_attachments(message.get("attachments", []))
         if message["role"] == "user":
-            st.markdown('<div class="edit-row">', unsafe_allow_html=True)
-            if st.button("Edit", key=f"edit_{conversation['id']}_{index}"):
-                st.session_state.editing_message_index = index
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+            left_col, bubble_col, edit_col = st.columns([3, 8, 0.55])
+            with bubble_col:
+                render_message(message["role"], message["content"])
+                render_attachments(message.get("attachments", []))
+            with edit_col:
+                st.markdown('<div class="edit-beside-bubble">', unsafe_allow_html=True)
+                if st.button("✎", key=f"edit_{conversation['id']}_{index}", help="Edit message"):
+                    st.session_state.editing_message_index = index
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            render_message(message["role"], message["content"])
+            render_attachments(message.get("attachments", []))
     st.markdown("</div>", unsafe_allow_html=True)
+
+live_response_area = st.container()
 
 temperature = 0.7
 system_prompt = DEFAULT_SYSTEM_PROMPT
@@ -732,7 +765,8 @@ with st.form("composer", clear_on_submit=True):
     with model_col:
         model = st.selectbox("Model", MODELS, index=0, label_visibility="collapsed")
     with send_col:
-        submitted = st.form_submit_button("↑")
+        button_label = "Stop" if st.session_state.get("is_generating") else "↑"
+        submitted = st.form_submit_button(button_label)
 
 if uploaded_image is not None:
     uploaded_files = [uploaded_image.name]
@@ -755,6 +789,7 @@ if submitted:
             st.warning(f"Could not transcribe voice: {error}")
 
 if submitted and (user_prompt or uploaded_files):
+    st.session_state.is_generating = True
     prompt_text = user_prompt or "Please respond to the attached file."
     save_conversation_if_needed(history, conversation)
     update_title(conversation, prompt_text)
@@ -764,8 +799,9 @@ if submitted and (user_prompt or uploaded_files):
     conversation["updated_at"] = int(time.time())
     save_history(history)
 
-    render_message("user", prompt_text)
-    render_attachments(uploaded_files)
+    with live_response_area:
+        render_message("user", prompt_text)
+        render_attachments(uploaded_files)
 
     messages_for_ollama = [{"role": "system", "content": system_prompt}]
     messages_for_ollama.extend(
@@ -773,7 +809,7 @@ if submitted and (user_prompt or uploaded_files):
         for message in conversation["messages"]
     )
 
-    response_placeholder = st.empty()
+    response_placeholder = live_response_area.empty()
     full_response = ""
 
     try:
@@ -806,7 +842,8 @@ if submitted and (user_prompt or uploaded_files):
                     break
 
         response_placeholder.empty()
-        render_message("assistant", full_response)
+        with live_response_area:
+            render_message("assistant", full_response)
 
     except requests.exceptions.HTTPError as error:
         full_response = (
@@ -815,13 +852,19 @@ if submitted and (user_prompt or uploaded_files):
             f"Run this command in terminal:\n\n"
             f"ollama pull {model}"
         )
-        response_placeholder.error(full_response)
+        st.session_state.is_generating = False
+        with live_response_area:
+            response_placeholder.error(full_response)
     except Exception as error:
         full_response = f"Error: {error}"
-        response_placeholder.error(full_response)
+        st.session_state.is_generating = False
+        with live_response_area:
+            response_placeholder.error(full_response)
 
     conversation["messages"].append({"role": "assistant", "content": full_response})
     conversation["updated_at"] = int(time.time())
     move_active_to_top(history, conversation["id"])
     save_history(history)
+    st.session_state.is_generating = False
     st.rerun()
+
